@@ -4,6 +4,7 @@ import {Sandbox} from '@e2b/code-interpreter'
 import { getSandbox, lastAssistanTextMessageContent } from "./utils";
 import { z } from "zod";
 import { PROMPT } from "@/prompt";
+import { prisma } from "@/lib/db";
 
 
 
@@ -161,7 +162,22 @@ export const codeAgentFunction = inngest.createFunction(
     })
 
 
-   
+   await step.run("save-result" , async() => {
+    return await prisma.message.create({
+      data: {
+        content: result.state.data.summary,
+        role: "ASSISTANT",
+        type: "RESULT",
+        fragment:{
+          create : {
+            sandboxUrl: sandboxUrl,
+            title: "Fragment",
+            files: result.state.data.files,
+          }
+        }
+      }
+    })
+   })
 
     return {
       url: sandboxUrl,
