@@ -1,6 +1,6 @@
 import { inngest } from "./client";
 import { Tool, createAgent, createNetwork, createTool, gemini } from "@inngest/agent-kit";
-import {Sandbox} from '@e2b/code-interpreter'
+import { Sandbox } from '@e2b/code-interpreter'
 import { getSandbox, lastAssistanTextMessageContent } from "./utils";
 import { z } from "zod";
 import { PROMPT } from "@/prompt";
@@ -11,7 +11,7 @@ import { prisma } from "@/lib/db";
 interface AgentState {
   summary: string;
   files: {
-      [path: string]: string
+    [path: string]: string
   }
 }
 
@@ -40,9 +40,9 @@ export const codeAgentFunction = inngest.createFunction(
           parameters: z.object({
             command: z.string()
           }),
-          handler: async ({command}, {step}) => {
+          handler: async ({ command }, { step }) => {
             return await step?.run("terminal", async () => {
-              const buffers = {stdout: "", stderr: ""}
+              const buffers = { stdout: "", stderr: "" }
               try {
                 const sandbox = await getSandbox(sandboxId)
                 const result = await sandbox.commands.run(command, {
@@ -65,7 +65,7 @@ export const codeAgentFunction = inngest.createFunction(
         createTool({
           name: "createOrUpdateFiles",
           description: "Create or update files in the sandbox",
-          parameters: 
+          parameters:
             z.object({
 
               files: z.array(
@@ -75,26 +75,26 @@ export const codeAgentFunction = inngest.createFunction(
                 })
               )
             }),
-            handler: async ({files}, {step, network}: Tool.Options<AgentState>) => {
+          handler: async ({ files }, { step, network }: Tool.Options<AgentState>) => {
 
-              const newFiles = await step?.run("createOrUpdateFiles", async () => {
-                try {
-                  const updatedFiles = network.state.data.files || {}
-                  const sandbox = await getSandbox(sandboxId)
-                  for (const file of files) {
-                    await sandbox.files.write(file.path, file.content)
-                    updatedFiles[file.path] = file.content
-                  }
-                  return updatedFiles
-                } catch(e)  {
-                  return `Error:` + e
+            const newFiles = await step?.run("createOrUpdateFiles", async () => {
+              try {
+                const updatedFiles = network.state.data.files || {}
+                const sandbox = await getSandbox(sandboxId)
+                for (const file of files) {
+                  await sandbox.files.write(file.path, file.content)
+                  updatedFiles[file.path] = file.content
                 }
-              })
-
-              if(typeof newFiles === "object") {
-                network.state.data.files = newFiles
+                return updatedFiles
+              } catch (e) {
+                return `Error:` + e
               }
+            })
+
+            if (typeof newFiles === "object") {
+              network.state.data.files = newFiles
             }
+          }
         }),
         createTool({
           name: "readFiles",
@@ -102,30 +102,30 @@ export const codeAgentFunction = inngest.createFunction(
           parameters: z.object({
             files: z.array(z.string())
           }),
-          handler: async ({files}, {step  }) => {
+          handler: async ({ files }, { step }) => {
             return await step?.run("readFiles", async () => {
               try {
                 const sandbox = await getSandbox(sandboxId)
                 const contents = []
                 for (const file of files) {
                   const content = await sandbox.files.read(file)
-                  contents.push({path: file, content})
+                  contents.push({ path: file, content })
                 }
 
                 return JSON.stringify(contents)
               } catch (error) {
-                return "Error: "+error
+                return "Error: " + error
               }
             })
           }
         })
       ],
       lifecycle: {
-        onResponse: async ({result, network}) => {
+        onResponse: async ({ result, network }) => {
           const lastAssistantMessage = await lastAssistanTextMessageContent(result)
 
-          if(lastAssistantMessage && network) {
-            if(lastAssistantMessage.includes("<task_summary>")) {
+          if (lastAssistantMessage && network) {
+            if (lastAssistantMessage.includes("<task_summary>")) {
               network.state.data.summary = lastAssistantMessage
             }
           }
@@ -135,14 +135,14 @@ export const codeAgentFunction = inngest.createFunction(
       }
     })
 
-    const network  = createNetwork<AgentState>({
+    const network = createNetwork<AgentState>({
       name: "coding-agent-network",
       agents: [codeAgent],
       maxIter: 15,
-      router: async ({network}) => {
+      router: async ({ network }) => {
         const summary = network.state.data.summary
 
-        if(summary) {
+        if (summary) {
           return
         }
 
@@ -151,8 +151,9 @@ export const codeAgentFunction = inngest.createFunction(
     })
 
     const result = await network.run(event.data.value)
+    const isError =
+      !result.state.data.summary || Object.keys(result.state.data.files || {}).length === 0;
 
-   
     const sandboxUrl = await step.run("get-sandbox-url", async () => {
       const sandbox = await getSandbox(sandboxId)
       const host = sandbox.getHost(3000)
@@ -162,23 +163,39 @@ export const codeAgentFunction = inngest.createFunction(
     })
 
 
-   await step.run("save-result" , async() => {
-    return await prisma.message.create({
-      data: {
-        content: result.state.data.summary,
-        role: "ASSISTANT",
-        type: "RESULT",
-        fragment:{
-          create : {
-            sandboxUrl: sandboxUrl,
-            title: "Fragment",
-            files: result.state.data.files,
+    await step.run("save-result", async () => {
+      if (isError) {
+
+
+        return await prisma.message.create({
+          data: {
+            projectId: event.data.projectId,
+            content: "Something went wrong",
+            role: "ASSISTANT",
+            type: "ERROR",
+
           }
-        }
+        })
       }
     })
-   })
 
+    await step.run("save-result", async () => {
+      return await prisma.message.create({
+        data: {
+          projectId: event.data.projectId,
+          content: result.state.data.summary,
+          role: "ASSISTANT",
+          type: "RESULT",
+          fragment: {
+            create: {
+              sandboxUrl: sandboxUrl,
+              title: "Fragment",
+              files: result.state.data.files,
+            }
+          }
+        }
+      })
+    })
     return {
       url: sandboxUrl,
       title: "Fragment",
